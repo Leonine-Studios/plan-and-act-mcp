@@ -1,6 +1,9 @@
 services:
   scratchpad-todo-mcp-server:
-    image: ghcr.io/leonine-studios/ephemeral-scratchpad-todo-mcp-server:latest
+    image: mcp-scratchpad-todo:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     environment:
