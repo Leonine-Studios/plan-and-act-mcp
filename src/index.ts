@@ -3,9 +3,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import {
-  InMemorySessionStore,
-  InMemorySessionStoreConfig,
-} from "./storage/InMemorySessionStore.js";
+  createSessionStoreFromEnv,
+  getStorageType,
+  StorageFactoryResult,
+} from "./storage/factory.js";
 import { ResponseEncoder, getResponseFormat } from "./utils/encoder.js";
 import {
   initSessionTool,
@@ -34,13 +35,10 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "localhost";
 const SESSION_TTL_HOURS = parseInt(process.env.SESSION_TTL_HOURS || "24", 10);
 const NANOID_LENGTH = parseInt(process.env.NANOID_LENGTH || "21", 10);
+const STORAGE_TYPE = getStorageType();
 
-// Initialize storage
-const storeConfig: InMemorySessionStoreConfig = {
-  ttlHours: SESSION_TTL_HOURS,
-  nanoidLength: NANOID_LENGTH,
-};
-const sessionStore = new InMemorySessionStore(storeConfig);
+// Initialize storage using factory
+let storage: StorageFactoryResult;
 
 // Initialize encoder
 const encoder = new ResponseEncoder();
@@ -61,7 +59,7 @@ function extractUserId(req: IncomingMessage): string | undefined {
  */
 function createToolContext(req: IncomingMessage): ToolContext {
   return {
-    store: sessionStore,
+    store: storage.store,
     encoder: encoder,
     userId: extractUserId(req),
   };
@@ -208,12 +206,16 @@ async function handleRequest(
 
   // Health check endpoint
   if (req.method === "GET" && req.url === "/health") {
-    const sessionCount = await sessionStore.count();
+    const sessionCount = await storage.store.count();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
         status: "ok",
         server: "ephemeral-scratchpad-todo-mcp-server",
+        storage: {
+          type: storage.type,
+          connected: storage.isConnected(),
+        },
         sessions: sessionCount,
         format: getResponseFormat(),
         ttl_hours: SESSION_TTL_HOURS,
@@ -258,10 +260,16 @@ async function handleRequest(
  * Main entry point
  */
 async function main(): Promise<void> {
-  const mcpServer = createMcpServer();
+  // Initialize storage
+  storage = createSessionStoreFromEnv();
+
+  // Connect to storage (important for Redis)
+  await storage.connect();
 
   // Start background cleanup
-  sessionStore.startCleanup();
+  storage.store.startCleanup();
+
+  const mcpServer = createMcpServer();
 
   // Create HTTP server
   const httpServer = createServer((req, res) => {
@@ -281,6 +289,7 @@ async function main(): Promise<void> {
     console.log(`   MCP:    http://${HOST}:${PORT}/mcp`);
     console.log(`   Health: http://${HOST}:${PORT}/health`);
     console.log(`\n⚙️  Configuration:`);
+    console.log(`   Storage Type:    ${STORAGE_TYPE}`);
     console.log(`   Response Format: ${getResponseFormat()}`);
     console.log(`   Session TTL:     ${SESSION_TTL_HOURS} hours`);
     console.log(`   NanoID Length:   ${NANOID_LENGTH}`);
@@ -296,9 +305,10 @@ async function main(): Promise<void> {
   });
 
   // Graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     console.log("\n👋 Shutting down gracefully...");
-    sessionStore.stopCleanup();
+    storage.store.stopCleanup();
+    await storage.disconnect();
     httpServer.close(() => {
       console.log("Server closed");
       process.exit(0);

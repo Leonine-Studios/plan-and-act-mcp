@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Source files (not needed in production image, we copy dist/)
+src/
+
+# Build output (rebuilt in Docker)
+dist/
+
+# Development files
+*.md
+!README.md
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Test files
+coverage/
+*.test.ts
+__tests__/
+
+# Cursor
+.cursor/
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript config (only needed for build stage, copied explicitly)
+# tsconfig.json is needed for build
+
+# Documentation
+docs/
+*.txt
