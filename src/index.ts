@@ -190,8 +190,7 @@ function createMcpServer(): McpServer {
  */
 async function handleRequest(
   req: IncomingMessage,
-  res: ServerResponse,
-  mcpServer: McpServer
+  res: ServerResponse
 ): Promise<void> {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -229,6 +228,10 @@ async function handleRequest(
     try {
       // Store current request for tool context
       currentRequest = req;
+
+      // Create a NEW McpServer instance for each request (stateless mode)
+      // This prevents SSE connection conflicts when multiple clients connect
+      const mcpServer = createMcpServer();
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // Stateless mode
@@ -269,11 +272,11 @@ async function main(): Promise<void> {
   // Start background cleanup
   storage.store.startCleanup();
 
-  const mcpServer = createMcpServer();
-
   // Create HTTP server
+  // Note: McpServer instances are created per-request in stateless mode
+  // to prevent SSE connection conflicts between multiple clients
   const httpServer = createServer((req, res) => {
-    handleRequest(req, res, mcpServer).catch((error) => {
+    handleRequest(req, res).catch((error) => {
       console.error("Unhandled error:", error);
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
