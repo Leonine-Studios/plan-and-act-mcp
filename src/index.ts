@@ -37,6 +37,9 @@ const SESSION_TTL_HOURS = parseInt(process.env.SESSION_TTL_HOURS || "24", 10);
 const NANOID_LENGTH = parseInt(process.env.NANOID_LENGTH || "21", 10);
 const STORAGE_TYPE = getStorageType();
 
+// Keep-alive interval for SSE connections (30 seconds, well under the 60s client timeout)
+const KEEP_ALIVE_INTERVAL_MS = 30000;
+
 // Initialize storage using factory
 let storage: StorageFactoryResult;
 
@@ -225,6 +228,8 @@ async function handleRequest(
 
   // MCP endpoint
   if (req.url === "/mcp" || req.url === "/") {
+    let keepAliveInterval: NodeJS.Timeout | null = null;
+
     try {
       // Store current request for tool context
       currentRequest = req;
@@ -240,6 +245,46 @@ async function handleRequest(
       // Connect the transport to the MCP server
       await mcpServer.connect(transport);
 
+      // For GET requests (SSE streams), set up keep-alive to prevent 60s client timeout
+      // The MCP client SDK has a 60-second default timeout for SSE connections
+      if (req.method === "GET") {
+        const acceptHeader = req.headers.accept || "";
+        const isSSE = acceptHeader.includes("text/event-stream");
+
+        if (isSSE) {
+          // Set up keep-alive interval to send SSE comments every 30 seconds
+          keepAliveInterval = setInterval(() => {
+            if (!res.writableEnded && res.writable) {
+              try {
+                // SSE comment format - ignored by clients but keeps connection alive
+                res.write(": keepalive\n\n");
+              } catch {
+                // Connection might be closed, clear interval
+                if (keepAliveInterval) {
+                  clearInterval(keepAliveInterval);
+                  keepAliveInterval = null;
+                }
+              }
+            }
+          }, KEEP_ALIVE_INTERVAL_MS);
+
+          // Clean up interval when response ends
+          res.on("close", () => {
+            if (keepAliveInterval) {
+              clearInterval(keepAliveInterval);
+              keepAliveInterval = null;
+            }
+          });
+
+          res.on("error", () => {
+            if (keepAliveInterval) {
+              clearInterval(keepAliveInterval);
+              keepAliveInterval = null;
+            }
+          });
+        }
+      }
+
       // Handle the HTTP request
       await transport.handleRequest(req, res);
     } catch (error) {
@@ -250,6 +295,10 @@ async function handleRequest(
       }
     } finally {
       currentRequest = null;
+      // Clean up keep-alive interval if still running
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+      }
     }
     return;
   }
@@ -285,6 +334,12 @@ async function main(): Promise<void> {
     });
   });
 
+  // Disable server timeouts for SSE connections
+  // These can cause premature connection termination
+  httpServer.timeout = 0; // Disable socket timeout
+  httpServer.keepAliveTimeout = 0; // Disable keep-alive timeout
+  httpServer.headersTimeout = 0; // Disable headers timeout
+
   httpServer.listen(PORT, HOST, () => {
     console.log(`\n🚀 Ephemeral Scratchpad & Todo MCP Server`);
     console.log(`   Running at http://${HOST}:${PORT}`);
@@ -296,6 +351,7 @@ async function main(): Promise<void> {
     console.log(`   Response Format: ${getResponseFormat()}`);
     console.log(`   Session TTL:     ${SESSION_TTL_HOURS} hours`);
     console.log(`   NanoID Length:   ${NANOID_LENGTH}`);
+    console.log(`   Keep-alive:      ${KEEP_ALIVE_INTERVAL_MS / 1000}s interval`);
     console.log(`\n🔧 Available Tools:`);
     console.log(`   - ${initSessionTool.name}`);
     console.log(`   - ${readScratchpadTool.name}`);
